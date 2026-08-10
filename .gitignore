@@ -1,0 +1,34 @@
+# Ignore if needed.
+
+# Docker-related
+*.log
+docker-compose.override.yml
+.env
+.env.*
+.envrc
+
+# Portainer volumes or data (if local bind mounts, NOT container data on named volumes)
+portainer_data/
+
+# Ignore local configuration files
+config/
+work/
+
+# VS Code
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+gitpull.sh
+
+# Ignore backups or temp files
+*.bak
+*.tmp
+*~

@@ -1,0 +1,218 @@
+# Shipyard ADS-B stack - single Raspberry Pi 5, plain docker compose.
+#
+# Logging is deliberately capped everywhere: this host boots from a microSD
+# card and unbounded docker json logs are the fastest way to wear one out.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "5m"
+    max-file: "2"
+
+services:
+
+  ultrafeeder:
+    image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder
+    container_name: ultrafeeder
+    hostname: ultrafeeder
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    device_cgroup_rules:
+      - 'c 189:* rwm'
+    ports:
+      - 8080:80               # to expose the web interface
+    environment:
+      # --------------------------------------------------
+      # general parameters:
+      - LOGLEVEL=error
+      - TZ=${FEEDER_TZ}
+      # --------------------------------------------------
+      # SDR related parameters:
+      - READSB_DEVICE_TYPE=rtlsdr
+      - READSB_GAIN=auto
+      - READSB_RTLSDR_DEVICE=${ADSB_SDR_SERIAL}
+      #
+      # --------------------------------------------------
+      # readsb/decoder parameters:
+      - READSB_LAT=${FEEDER_LAT}
+      - READSB_LON=${FEEDER_LONG}
+      - READSB_ALT=${FEEDER_ALT_M}m
+      - READSB_RX_LOCATION_ACCURACY=2
+      - READSB_STATS_RANGE=true
+      #
+      # --------------------------------------------------
+      - READSB_FORWARD_MLAT_SBS=true
+      #
+      # --------------------------------------------------
+      # Aggregator connections.
+      # Each line ends with ";" EXCEPT the last one.
+      - ULTRAFEEDER_CONFIG=
+        adsb,feed.adsb.fi,30004,beast_reduce_plus_out;
+        adsb,in.adsb.lol,30004,beast_reduce_plus_out;
+        adsb,feed.airplanes.live,30004,beast_reduce_plus_out;
+        adsb,feed.planespotters.net,30004,beast_reduce_plus_out;
+        adsb,feed.theairtraffic.com,30004,beast_reduce_plus_out;
+        adsb,data.avdelphi.com,24999,beast_reduce_plus_out;
+        adsb,dati.flyitalyadsb.com,4905,beast_reduce_plus_out;
+        adsb,feed1.adsbexchange.com,30004,beast_reduce_plus_out;
+        mlat,feed.adsb.fi,31090;
+        mlat,in.adsb.lol,31090;
+        mlat,feed.airplanes.live,31090;
+        mlat,mlat.planespotters.net,31090;
+        mlat,feed.theairtraffic.com,31090;
+        mlat,dati.flyitalyadsb.com,30100;
+        mlat,feed.adsbexchange.com,31090,39008,uuid=${ADSBX_UUID}
+      #
+      # --------------------------------------------------
+      - UUID=${MULTIFEEDER_UUID}
+      - MLAT_USER=${FEEDER_NAME}
+      #
+      # --------------------------------------------------
+      # Disk write reduction (microSD wear):
+      # globe_history is the busiest writer in this container.
+      - MAX_GLOBE_HISTORY=7
+      #
+      # --------------------------------------------------
+      # TAR1090 (Map Web Page) parameters:
+      - UPDATE_TAR1090=true
+      - TAR1090_DEFAULTCENTERLAT=${FEEDER_LAT}
+      - TAR1090_DEFAULTCENTERLON=${FEEDER_LONG}
+      - TAR1090_MESSAGERATEINTITLE=true
+      - TAR1090_PAGETITLE=${FEEDER_NAME}
+      - TAR1090_PLANECOUNTINTITLE=true
+      - TAR1090_ENABLE_AC_DB=true
+      - TAR1090_FLIGHTAWARELINKS=true
+      - HEYWHATSTHAT_PANORAMA_ID=${FEEDER_HEYWHATSTHAT_ID}
+      - HEYWHATSTHAT_ALTS=${FEEDER_HEYWHATSTHAT_ALTS}
+      - TAR1090_SITESHOW=true
+      - TAR1090_RANGE_OUTLINE_COLORED_BY_ALTITUDE=true
+      - TAR1090_RANGE_OUTLINE_WIDTH=2.0
+      - TAR1090_RANGERINGSDISTANCES=50,100,150,200
+      - TAR1090_RANGERINGSCOLORS='#1A237E','#0D47A1','#42A5F5','#64B5F6'
+      - TAR1090_USEROUTEAPI=true
+      #
+      # --------------------------------------------------
+      # GRAPHS1090 (Decoder and System Status Web Page) parameters:
+      - GRAPHS1090_DARKMODE=true
+      #
+      # --------------------------------------------------
+    volumes:
+      - /opt/adsb/ultrafeeder/globe_history:/var/globe_history
+      - /opt/adsb/ultrafeeder/graphs1090:/var/lib/collectd
+      - /proc/diskstats:/proc/diskstats:ro
+      - /dev/bus/usb/:/dev/bus/usb:rw
+    tmpfs:
+      - /run:exec,size=256M
+      - /tmp:size=128M
+      - /var/log:size=32M
+
+  # FlightRadar24. MLAT is deliberately off - see README.
+  fr24:
+    image: ghcr.io/sdr-enthusiasts/docker-flightradar24:latest
+    container_name: fr24
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - 8754:8754
+    environment:
+      - TZ=${FEEDER_TZ}
+      - BEASTHOST=ultrafeeder
+      - FR24KEY=${FR24_SHARING_KEY}
+      - MLAT=no
+      - VERBOSE_LOGGING=false
+    tmpfs:
+      - /var/log
+
+  # FlightAware.
+  piaware:
+    image: ghcr.io/sdr-enthusiasts/docker-piaware:latest
+    container_name: piaware
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - TZ=${FEEDER_TZ}
+      - BEASTHOST=ultrafeeder
+      - FEEDER_ID=${FLIGHTAWARE_FEEDER_ID}
+      - LAT=${FEEDER_LAT}
+      - LON=${FEEDER_LONG}
+      - ALT=${FEEDER_ALT_M}m
+    tmpfs:
+      - /var/log
+
+  # AirNav Radar (formerly RadarBox). Feeds its MLAT results back into
+  # ultrafeeder's mlathub so they show on the local map.
+  airnavradar:
+    image: ghcr.io/sdr-enthusiasts/docker-airnavradar:latest
+    container_name: airnavradar
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - TZ=${FEEDER_TZ}
+      - BEASTHOST=ultrafeeder
+      - MLAT_RESULTS_BEASTHOST=ultrafeeder
+      - MLAT_RESULTS_BEASTPORT=31004
+      - LAT=${FEEDER_LAT}
+      - LONG=${FEEDER_LONG}
+      - ALT=${FEEDER_ALT_M}
+      - SHARING_KEY=${AIRNAV_SHARING_KEY}
+      - DEBUG_LEVEL=0
+    tmpfs:
+      - /var/log
+
+  # Plane Finder.
+  planefinder:
+    image: ghcr.io/sdr-enthusiasts/docker-planefinder:latest
+    container_name: planefinder
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - 30053:30053
+    environment:
+      - TZ=${FEEDER_TZ}
+      - BEASTHOST=ultrafeeder
+      - LAT=${FEEDER_LAT}
+      - LONG=${FEEDER_LONG}
+      - SHARECODE=${PLANEFINDER_SHARECODE}
+    tmpfs:
+      - /var/log
+
+  # NOTE: portainer and watchtower both mount the docker socket, which is
+  # equivalent to root on this host. Keep them off the public internet.
+  portainer:
+    image: portainer/portainer-ee:latest
+    container_name: portainer
+    restart: always
+    logging: *default-logging
+    ports:
+      - 9443:9443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    environment:
+      - PORTAINER_LICENSE_KEY=${PORTAINER_LICENSE_KEY}
+
+  watchtower:
+    image: nickfedor/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=${FEEDER_TZ}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_RESTARTING=true
+      - WATCHTOWER_NO_STARTUP_MESSAGE=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+
+volumes:
+  portainer_data:
