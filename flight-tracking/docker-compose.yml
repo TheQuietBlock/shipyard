@@ -185,21 +185,6 @@ services:
     tmpfs:
       - /var/log
 
-  # NOTE: portainer and watchtower both mount the docker socket, which is
-  # equivalent to root on this host. Keep them off the public internet.
-  portainer:
-    image: portainer/portainer-ee:latest
-    container_name: portainer
-    restart: always
-    logging: *default-logging
-    ports:
-      - 9443:9443
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - portainer_data:/data
-    environment:
-      - PORTAINER_LICENSE_KEY=${PORTAINER_LICENSE_KEY}
-
   watchtower:
     image: nickfedor/watchtower
     container_name: watchtower
@@ -213,6 +198,24 @@ services:
       - WATCHTOWER_INCLUDE_RESTARTING=true
       - WATCHTOWER_NO_STARTUP_MESSAGE=true
       - WATCHTOWER_SCHEDULE=0 0 4 * * *
+
+  portainer_agent:
+    image: portainer/agent:2.45.1
+    container_name: portainer_agent
+    restart: always
+
+    ports:
+      - "9001:9001"
+
+    env_file:
+      - /etc/portainer-agent/agent.env
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+
+    networks:
+      - default
 
 volumes:
   portainer_data:
